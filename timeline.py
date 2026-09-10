@@ -108,6 +108,7 @@ class _TimelineState:
     # from `DynamicPlanStepBindUpdate.value.autoFilledArguments`.
     pending_auto_filled: dict[str, list[str]] = field(default_factory=dict)
     tool_calls: list[ToolCall] = field(default_factory=list)
+    traced_tool_calls: dict[str, ToolCall] = field(default_factory=dict)
     generative_answer_traces: list[GenerativeAnswerTrace] = field(default_factory=list)
     last_step_topic: str | None = None  # most recent in-progress topic, for trace attribution
     # attempts within the current user turn — reset to 0 on each USER_MESSAGE
@@ -708,7 +709,14 @@ def _process_trace_event(
         )
         return
 
-    if act_type == "event":
+    modern_tool_trace_types = {
+        "ToolCallTrace:Started",
+        "ToolCallTrace:Completed",
+        "ConnectedAgentInitializeTraceData",
+        "ConnectedAgentCompletedTraceData",
+    }
+
+    if act_type == "event" and value_type not in modern_tool_trace_types:
         if value_type == "DynamicPlanReceived":
             steps = value.get("steps", [])
             step_names = []
@@ -1116,8 +1124,93 @@ def _process_trace_event(
                 )
             )
 
-    elif act_type == "trace":
-        if value_type == "VariableAssignment":
+    elif act_type == "trace" or value_type in modern_tool_trace_types:
+        if value_type == "ToolCallTrace:Started":
+            tool_call_id = value.get("toolCallId", "")
+            tool_kind = value.get("toolKind", "")
+            is_agent = tool_kind.lower() == "agent"
+            display_name = value.get("toolDisplayName") or value.get("toolName") or tool_call_id
+            arguments = value.get("filledParameters") or {}
+            tool_call = ToolCall(
+                step_id=tool_call_id,
+                task_dialog_id=value.get("toolName") or tool_call_id,
+                display_name=display_name,
+                tool_type="ConnectedAgent" if is_agent else tool_kind or None,
+                step_type="Agent" if is_agent else "Tool",
+                arguments={key: str(argument) for key, argument in arguments.items()},
+                state="inProgress",
+                trigger_timestamp=timestamp,
+                position=position,
+            )
+            state.tool_calls.append(tool_call)
+            if tool_call_id:
+                state.traced_tool_calls[tool_call_id] = tool_call
+            state.events.append(
+                TimelineEvent(
+                    timestamp=timestamp,
+                    position=position,
+                    event_type=EventType.STEP_TRIGGERED,
+                    topic_name=display_name,
+                    summary=f"Step start: {display_name} ({tool_call.step_type})",
+                    state="inProgress",
+                    step_id=tool_call_id,
+                )
+            )
+
+        elif value_type == "ConnectedAgentInitializeTraceData":
+            tool_call_id = value.get("sessionId") or value.get("planStepId") or ""
+            tool_call = state.traced_tool_calls.get(tool_call_id)
+            if tool_call:
+                tool_call.task_dialog_id = value.get("botSchemaName") or tool_call.task_dialog_id
+                tool_call.tool_type = "ConnectedAgent"
+                tool_call.step_type = "Agent"
+
+        elif value_type == "ToolCallTrace:Completed":
+            tool_call_id = value.get("toolCallId", "")
+            tool_call = state.traced_tool_calls.get(tool_call_id)
+            display_name = value.get("toolDisplayName") or value.get("toolName") or tool_call_id
+            if tool_call is None:
+                tool_call = ToolCall(
+                    step_id=tool_call_id,
+                    task_dialog_id=value.get("toolName") or tool_call_id,
+                    display_name=display_name,
+                    tool_type="ConnectedAgent" if value.get("toolKind", "").lower() == "agent" else None,
+                    step_type="Agent" if value.get("toolKind", "").lower() == "agent" else "Tool",
+                    position=position,
+                )
+                state.tool_calls.append(tool_call)
+            result = value.get("result")
+            parsed_result = None
+            if isinstance(result, str):
+                try:
+                    parsed_result = json.loads(result)
+                except json.JSONDecodeError:
+                    pass
+            tool_call.observation = ToolCallObservation(
+                structured_content=parsed_result if isinstance(parsed_result, dict) else None,
+                raw_json=result if isinstance(result, str) else None,
+            )
+            is_error = bool(value.get("isError"))
+            if isinstance(parsed_result, dict):
+                is_error = is_error or bool(parsed_result.get("is_error"))
+            tool_call.state = "failed" if is_error else "completed"
+            tool_call.error = str(value.get("error")) if value.get("error") else None
+            tool_call.duration_ms = float(value.get("durationMs") or 0)
+            tool_call.finish_timestamp = timestamp
+            state.events.append(
+                TimelineEvent(
+                    timestamp=timestamp,
+                    position=position,
+                    event_type=EventType.STEP_FINISHED,
+                    topic_name=tool_call.display_name,
+                    summary=f"Step end: {tool_call.display_name} ({tool_call.state})",
+                    state=tool_call.state,
+                    step_id=tool_call_id,
+                    error=tool_call.error,
+                )
+            )
+
+        elif value_type == "VariableAssignment":
             var_id = value.get("id", "")
             new_value = str(value.get("newValue", ""))[:80]
             scope = value.get("type", "")

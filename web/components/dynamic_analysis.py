@@ -2214,6 +2214,43 @@ def _mcs_tools_stats_row(item: dict) -> rx.Component:
     )
 
 
+def _mcs_tools_agent_link_row(item: dict) -> rx.Component:
+    return rx.hstack(
+        rx.icon("bot", size=16, color=PRIMARY),
+        rx.vstack(
+            rx.text(item["agent"], font_size="13px", font_weight="600", color="var(--gray-12)"),
+            rx.text(
+                item["conversation_id"],
+                font_size="10px",
+                color="var(--gray-a8)",
+                font_family=_MONO,
+            ),
+            spacing="0",
+            align="start",
+        ),
+        rx.badge(item["state"], color_scheme="green", variant="soft", size="1"),
+        rx.text(item["duration"], font_size="12px", color="var(--gray-a9)"),
+        rx.spacer(),
+        rx.cond(
+            item["can_open"],
+            rx.button(
+                rx.icon("arrow-right", size=14),
+                "Open conversation",
+                on_click=State.trace_collection_transcript(item["target_index"]),
+                size="2",
+                variant="soft",
+                color_scheme="green",
+            ),
+            rx.text("Child transcript not found in this collection", font_size="11px", color="var(--amber-10)"),
+        ),
+        width="100%",
+        align="center",
+        spacing="3",
+        padding="10px 12px",
+        border_bottom=f"1px solid {SURFACE_BORDER}",
+    )
+
+
 def _mcs_tools_panel() -> rx.Component:
     """Consolidated Tools tab — absorbs the former Topics tab.
 
@@ -2391,6 +2428,14 @@ def _mcs_tools_panel() -> rx.Component:
                 rx.text("Runtime Tool Call Analysis", font_size="15px", font_weight="700", color="var(--gray-12)"),
                 # Tool call flow (Mermaid)
                 _mermaid_block(State.mcs_tools_flow_mermaid),
+                rx.cond(
+                    State.mcs_tools_agent_links.length() > 0,  # type: ignore[union-attr]
+                    card(
+                        section_heading("Connected Agent Conversations"),
+                        rx.foreach(State.mcs_tools_agent_links, _mcs_tools_agent_link_row),
+                        width="100%",
+                    ),
+                ),
                 # Tool statistics
                 rx.cond(
                     State.mcs_tools_stats_rows.length() > 0,  # type: ignore[union-attr]

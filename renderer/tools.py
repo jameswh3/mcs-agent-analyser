@@ -546,6 +546,38 @@ def build_tool_call_analysis_data(timeline: ConversationTimeline, profile: BotPr
     }
 
 
+def build_connected_agent_links(timeline: ConversationTimeline, collection: list[dict]) -> list[dict]:
+    """Resolve connected-agent result IDs to transcripts in an uploaded CSV collection."""
+    links: list[dict] = []
+    for tool_call in timeline.tool_calls:
+        if tool_call.step_type != "Agent":
+            continue
+        structured = tool_call.observation.structured_content if tool_call.observation else None
+        child_conversation_id = structured.get("conversation_id", "") if structured else ""
+        matching_indices = [
+            index
+            for index, transcript in enumerate(collection)
+            if child_conversation_id
+            and child_conversation_id in str(transcript.get("title", ""))
+            and (
+                not tool_call.task_dialog_id
+                or transcript.get("metadata", {}).get("export", {}).get("BotName") == tool_call.task_dialog_id
+            )
+        ]
+        target_index = matching_indices[0] if len(matching_indices) == 1 else None
+        links.append(
+            {
+                "agent": tool_call.display_name,
+                "state": tool_call.state,
+                "duration": _format_duration(tool_call.duration_ms) if tool_call.duration_ms else "N/A",
+                "conversation_id": child_conversation_id,
+                "target_index": str(target_index) if target_index is not None else "",
+                "can_open": target_index is not None,
+            }
+        )
+    return links
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

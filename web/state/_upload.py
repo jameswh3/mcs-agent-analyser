@@ -36,7 +36,7 @@ from renderer.sections import (  # noqa: E402
     render_report_sections,
 )
 from timeline import build_timeline  # noqa: E402
-from transcript import parse_transcript_json  # noqa: E402
+from transcript import parse_transcript_csv, parse_transcript_json  # noqa: E402
 from utils import safe_extractall  # noqa: E402
 
 from web.state._base import _clear_bot_profile, _save_bot_profile
@@ -71,10 +71,17 @@ class UploadMixin(rx.State, mixin=True):
     upload_error: str = ""
     upload_stage: str = ""
     paste_json: str = ""
+    transcript_collection_json: str = ""
+    transcript_collection_options: list[dict[str, str]] = []
+    selected_transcript_index: str = ""
 
     @rx.event
     def set_paste_json(self, value: str):
         self.paste_json = value
+
+    @rx.event
+    def set_selected_transcript_index(self, value: str):
+        self.selected_transcript_index = value
 
     # --- Upload handlers ---
 
@@ -132,6 +139,10 @@ class UploadMixin(rx.State, mixin=True):
                 self.upload_stage = "Parsing transcript..."
                 yield
                 await self._process_transcript(files)
+            elif len(files) == 1 and exts[0] == ".csv":
+                self.upload_stage = "Parsing transcript collection..."
+                yield
+                await self._process_transcript_collection(files)
             elif len(files) == 1 and exts[0] in (".yml", ".yaml"):
                 # Single yml without a paired dialog — surface the same error
                 # as before but point at the paste path so the user sees the
@@ -145,7 +156,8 @@ class UploadMixin(rx.State, mixin=True):
                     "Could not detect upload type. Accepted formats:\n"
                     "- 1 .zip file (bot export)\n"
                     "- botContent.yml + dialog.json (2 files, OR one yml + a pasted transcript)\n"
-                    "- 1 .json file (transcript)"
+                        "- 1 .json file (transcript)\n"
+                        "- 1 .csv file (Power Platform transcript collection)"
                 )
         except Exception as e:
             logger.error(f"Upload processing failed: {e}")
@@ -363,6 +375,99 @@ class UploadMixin(rx.State, mixin=True):
 
             self._populate_dynamic_sections(None, timeline, "transcript")
 
+    async def _process_transcript_collection(self, files: list[rx.UploadFile]):
+        if len(files) != 1:
+            self.upload_error = "Upload exactly one transcript .csv file."
+            return
+
+        upload_file = files[0]
+        data = await upload_file.read()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / (upload_file.filename or "conversationtranscripts.csv")
+            csv_path.write_bytes(data)
+            transcripts = parse_transcript_csv(csv_path)
+            if not transcripts:
+                raise ValueError("Transcript CSV contains no conversations")
+
+            collection = []
+            options = []
+            for index, transcript in enumerate(transcripts):
+                start_time = str(transcript.metadata.get("conversation_start_time", ""))
+                title = transcript.title.strip() or transcript.conversation_id or f"Conversation {index + 1}"
+                transcript_agent = str(transcript.metadata.get("export", {}).get("BotName", ""))
+                is_agent_blocked = any(
+                    activity.get("valueType") == "ErrorTraceData"
+                    and (activity.get("value") or {}).get("errorCode") == "AgentBlocked"
+                    for activity in transcript.activities
+                )
+                interaction_status = "Agent blocked" if is_agent_blocked else ""
+                label_parts = [
+                    start_time[:19],
+                    transcript_agent,
+                    interaction_status,
+                    title[:60],
+                    transcript.conversation_id,
+                ]
+                label = " | ".join(part for part in label_parts if part)
+                options.append({"value": str(index), "label": label})
+                collection.append(
+                    {
+                        "title": title,
+                        "conversation_id": transcript.conversation_id,
+                        "activities": transcript.activities,
+                        "metadata": transcript.metadata,
+                    }
+                )
+
+            self.transcript_collection_json = json.dumps(collection)
+            self.transcript_collection_options = options
+            self.selected_transcript_index = "0"
+            self.report_markdown = ""  # type: ignore[attr-defined]
+            self.report_title = ""  # type: ignore[attr-defined]
+
+    @rx.event
+    def trace_selected_transcript(self):
+        if not self.transcript_collection_json or not self.selected_transcript_index:
+            self.upload_error = "Select a conversation to trace."
+            return
+
+        try:
+            return self._trace_collection_transcript(int(self.selected_transcript_index))
+        except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            logger.error(f"Could not trace selected CSV conversation: {exc}")
+            self.upload_error = f"Could not trace selected conversation: {exc}"
+
+    @rx.event
+    def trace_collection_transcript(self, index: str):
+        try:
+            self.selected_transcript_index = index
+            return self._trace_collection_transcript(int(index))
+        except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            logger.error(f"Could not trace linked CSV conversation: {exc}")
+            self.upload_error = f"Could not trace linked conversation: {exc}"
+
+    def _trace_collection_transcript(self, index: int):
+            collection = json.loads(self.transcript_collection_json)
+            selected = collection[index]
+            activities = selected["activities"]
+            metadata = selected["metadata"]
+            timeline = build_timeline(activities, {})
+            if selected["conversation_id"]:
+                timeline.conversation_id = selected["conversation_id"]
+
+            title = selected["title"]
+            self.report_markdown = render_transcript_report(title, timeline, metadata)  # type: ignore[attr-defined]
+            self.report_title = title  # type: ignore[attr-defined]
+            self.report_source = "upload"  # type: ignore[attr-defined]
+            self.lint_report_markdown = ""  # type: ignore[attr-defined]
+            self.bot_profile_json = ""  # type: ignore[attr-defined]
+            self.timeline_json = timeline.model_dump_json()  # type: ignore[attr-defined]
+            self.report_custom_findings = []  # type: ignore[attr-defined]
+            _clear_bot_profile()
+            self._populate_dynamic_sections(None, timeline, "transcript")
+            return rx.redirect("/analysis/dynamic")
+
     def _populate_dynamic_sections(
         self,
         profile,
@@ -519,6 +624,14 @@ class UploadMixin(rx.State, mixin=True):
                 self.mcs_tools_stats_rows = tool_data["stats_rows"]  # type: ignore[attr-defined]
                 self.mcs_tools_flow_mermaid = tool_data["flow_mermaid"]  # type: ignore[attr-defined]
                 self.mcs_tools_kpis = tool_data["kpis"]  # type: ignore[attr-defined]
+
+        if timeline is not None and self.transcript_collection_json:
+            from renderer.tools import build_connected_agent_links
+
+            collection = json.loads(self.transcript_collection_json)
+            self.mcs_tools_agent_links = build_connected_agent_links(timeline, collection)  # type: ignore[attr-defined]
+        else:
+            self.mcs_tools_agent_links = []  # type: ignore[attr-defined]
 
         # ── Conversation analysis insights ─────────────────────────────────
         self._populate_insights_data(profile, timeline)
@@ -3183,8 +3296,42 @@ class UploadMixin(rx.State, mixin=True):
         else:
             self.mcs_ins_dead_summary = ""  # type: ignore[attr-defined]
             self.mcs_ins_dead_rows = []  # type: ignore[attr-defined]
-            self.mcs_ins_deleg_kpis = []  # type: ignore[attr-defined]
-            self.mcs_ins_deleg_rows = []  # type: ignore[attr-defined]
+            runtime_delegations = (
+                [
+                    call
+                    for call in timeline.tool_calls
+                    if call.step_type == "Agent"
+                    or call.tool_type in {"ConnectedAgent", "ChildAgent", "A2AAgent", "ExternalAgent"}
+                ]
+                if timeline is not None
+                else []
+            )
+            self.mcs_ins_deleg_kpis = (  # type: ignore[attr-defined]
+                [
+                    {"label": "Observed", "value": str(len(runtime_delegations))},
+                    {
+                        "label": "Completed",
+                        "value": str(sum(call.state == "completed" for call in runtime_delegations)),
+                    },
+                    {
+                        "label": "Failed",
+                        "value": str(sum(call.state == "failed" for call in runtime_delegations)),
+                        "tone": "danger" if any(call.state == "failed" for call in runtime_delegations) else "",
+                    },
+                ]
+                if runtime_delegations
+                else []
+            )
+            self.mcs_ins_deleg_rows = [  # type: ignore[attr-defined]
+                {
+                    "agent": call.display_name,
+                    "type": call.tool_type or call.step_type,
+                    "state": call.state,
+                    "duration": f"{call.duration_ms:.0f}ms",
+                    "thought": (call.thought or "—")[:80],
+                }
+                for call in runtime_delegations
+            ]
             self.mcs_ins_deleg_warnings = []  # type: ignore[attr-defined]
             self.mcs_ins_align_kpis = []  # type: ignore[attr-defined]
             self.mcs_ins_align_rows = []  # type: ignore[attr-defined]
@@ -3215,6 +3362,7 @@ class UploadMixin(rx.State, mixin=True):
         self.mcs_tools_call_count = 0  # type: ignore[attr-defined]
         self.mcs_tools_stats_rows = []  # type: ignore[attr-defined]
         self.mcs_tools_flow_mermaid = ""  # type: ignore[attr-defined]
+        self.mcs_tools_agent_links = []  # type: ignore[attr-defined]
         self.mcs_knowledge_kpis = []  # type: ignore[attr-defined]
         self.mcs_knowledge_sources = []  # type: ignore[attr-defined]
         self.mcs_knowledge_files = []  # type: ignore[attr-defined]
@@ -3318,6 +3466,9 @@ class UploadMixin(rx.State, mixin=True):
         self.report_source = ""  # type: ignore[attr-defined]
         self.upload_error = ""
         self.paste_json = ""
+        self.transcript_collection_json = ""
+        self.transcript_collection_options = []
+        self.selected_transcript_index = ""
         self.bot_profile_json = ""  # type: ignore[attr-defined]
         self.timeline_json = ""  # type: ignore[attr-defined]
         self.report_custom_findings = []  # type: ignore[attr-defined]

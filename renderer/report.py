@@ -453,6 +453,66 @@ def _render_raw_events(timeline: ConversationTimeline) -> str:
     return "\n".join(lines)
 
 
+def _render_agent_interaction_evidence(timeline: ConversationTimeline, metadata: dict) -> str:
+    """Render agent-to-agent evidence while keeping inferred relationships explicit."""
+    agent_calls = [
+        call
+        for call in timeline.tool_calls
+        if call.step_type == "Agent"
+        or call.tool_type in {"ConnectedAgent", "ChildAgent", "A2AAgent", "ExternalAgent"}
+    ]
+    blocked = any("AgentBlocked" in error for error in timeline.errors)
+    if not agent_calls and not blocked:
+        return ""
+
+    export_metadata = metadata.get("export", {})
+    transcript_agent = export_metadata.get("BotName") or timeline.bot_name or "Unknown"
+    lines = ["## Agent Interaction Evidence\n"]
+
+    if agent_calls:
+        lines.extend(
+            [
+                "### Observed Delegations\n",
+                "| Caller | Called Agent | Trace Evidence | State | Duration |",
+                "| --- | --- | --- | --- | ---: |",
+            ]
+        )
+        for call in agent_calls:
+            duration = f"{call.duration_ms:.0f} ms" if call.duration_ms else "N/A"
+            trace_evidence = call.tool_type or call.step_type
+            lines.append(
+                f"| {_sanitize_table_cell(transcript_agent)} "
+                f"| {_sanitize_table_cell(call.display_name or call.task_dialog_id)} "
+                f"| {_sanitize_table_cell(trace_evidence)} "
+                f"| {_sanitize_table_cell(call.state or 'unknown')} | {duration} |"
+            )
+        lines.append("")
+
+    if blocked:
+        has_user_message = any(event.event_type == EventType.USER_MESSAGE for event in timeline.events)
+        invocation_context = (
+            "A user message is present in this transcript."
+            if has_user_message
+            else "No user message is recorded; this is consistent with an agent-to-agent invocation, but is not conclusive."
+        )
+        lines.extend(
+            [
+                "### Blocked Agent Entry\n",
+                "| Evidence | Value |",
+                "| --- | --- |",
+                f"| Transcript agent | {_sanitize_table_cell(transcript_agent)} |",
+                "| Runtime result | `AgentBlocked` |",
+                f"| Invocation context | {_sanitize_table_cell(invocation_context)} |",
+                "| Caller identity | Not present in this export |",
+                "",
+                "The export proves that this agent entry was blocked, but it does not contain a correlation field that identifies the calling agent.",
+                "",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
 def render_transcript_report(
     title: str,
     timeline: ConversationTimeline,
@@ -466,6 +526,9 @@ def render_transcript_report(
     if session:
         sections.append("## Session Summary\n")
         lines = ["| Property | Value |", "| --- | --- |"]
+        transcript_agent = metadata.get("export", {}).get("BotName")
+        if transcript_agent:
+            lines.append(f"| Agent | {_sanitize_table_cell(transcript_agent)} |")
         if session.get("startTimeUtc"):
             lines.append(f"| Start Time | {session['startTimeUtc']} |")
         if session.get("endTimeUtc"):
@@ -482,6 +545,10 @@ def render_transcript_report(
             lines.append(f"| Implied Success | {session['impliedSuccess']} |")
         lines.append("")
         sections.append("\n".join(lines))
+
+    agent_interaction = _render_agent_interaction_evidence(timeline, metadata)
+    if agent_interaction:
+        sections.append(agent_interaction)
 
     sections.append(render_knowledge_search_section(timeline))
 
