@@ -5,10 +5,11 @@ import typer
 from dotenv import load_dotenv
 from loguru import logger
 
+from analytics import aggregate_timelines, render_batch_report
 from parser import parse_dialog_json, parse_yaml
 from renderer import render_report, render_transcript_report
 from timeline import build_timeline
-from transcript import parse_transcript_json
+from transcript import parse_transcript_csv, parse_transcript_json
 
 load_dotenv()
 
@@ -73,9 +74,30 @@ def _process_transcript(json_path: Path) -> Path:
     return output
 
 
+def _process_transcript_collection(csv_path: Path, output: Path | None = None) -> Path:
+    """Process a Power Platform transcript CSV and generate a batch report."""
+    logger.info(f"Parsing transcript collection {csv_path.name}...")
+    transcripts = parse_transcript_csv(csv_path)
+    timelines = []
+    metadata_list = []
+
+    for transcript in transcripts:
+        timeline = build_timeline(transcript.activities, {})
+        if transcript.conversation_id:
+            timeline.conversation_id = transcript.conversation_id
+        timelines.append(timeline)
+        metadata_list.append(transcript.metadata)
+
+    report = render_batch_report(aggregate_timelines(timelines, metadata_list))
+    output = output or csv_path.with_suffix(".md")
+    output.write_text(report, encoding="utf-8")
+    logger.info(f"Transcript collection report written to {output}")
+    return output
+
+
 @app.command()
 def analyse(
-    path: Path = typer.Argument(..., help="Path to a bot export folder (or parent folder with --all)"),
+    path: Path = typer.Argument(..., help="Path to a bot export folder, transcript JSON, or transcript CSV"),
     all_folders: bool = typer.Option(False, "--all", "-a", help="Process all subfolders containing bot exports"),
     output: Path | None = typer.Option(None, "--output", "-o", help="Custom output path for the report"),
 ) -> None:
@@ -87,6 +109,9 @@ def analyse(
         raise typer.Exit(1)
 
     if all_folders:
+        if not path.is_dir():
+            logger.error("--all requires a directory")
+            raise typer.Exit(1)
         # Process all subfolders
         folders = sorted([d for d in path.iterdir() if d.is_dir() and (d / "botContent.yml").exists()])
         if not folders:
@@ -114,11 +139,15 @@ def analyse(
 
         logger.info("All done.")
     else:
-        # Single folder
-        if not path.is_dir():
-            logger.error(f"Not a directory: {path}")
+        if path.is_dir():
+            _process_folder(path, output)
+        elif path.suffix.lower() == ".json":
+            _process_transcript(path)
+        elif path.suffix.lower() == ".csv":
+            _process_transcript_collection(path, output)
+        else:
+            logger.error(f"Unsupported input: {path}")
             raise typer.Exit(1)
-        _process_folder(path, output)
 
 
 if __name__ == "__main__":

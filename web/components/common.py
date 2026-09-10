@@ -269,7 +269,7 @@ def dashboard_cards() -> rx.Component:
             _dashboard_card(
                 "upload",
                 "Upload & Analyse",
-                "Upload a bot export (.zip) or paste a conversation transcript (.json)",
+                "Upload a bot export, transcript JSON, or Power Platform transcript CSV",
                 "/upload",
             ),
             _dashboard_card(

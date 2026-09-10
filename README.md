@@ -48,7 +48,7 @@ Everything you need to build with confidence and debug without guessing. If you'
 | **Upload bot export** | Drop a `.zip`, or `botContent.yml` + `dialog.json` — get a full architecture report with quick wins |
 | **Connect to Dataverse** | Device-code auth to your environment, auto-analyses your bot the moment you connect |
 | **Routing analysis** | Orchestrator decision timeline with routing scores, topic lifecycles with redirect tracking, trigger phrase similarity, plan evolution diffs with thrashing detection |
-| **Conversation transcripts** | Upload or fetch transcripts from Dataverse — sequence diagrams, Gantt charts, event logs, per-turn efficiency and latency breakdown |
+| **Conversation transcripts** | Upload JSON, import a Power Platform CSV collection, or fetch transcripts from Dataverse — sequence diagrams, batch analytics, event logs, per-turn efficiency and latency breakdown |
 | **Single conversation lookup** | Fetch and analyse a specific conversation by ID directly from Dataverse |
 | **Response quality scoring** | Groundedness assessment for every bot response — detects ungrounded answers, hallucination risk from zero-result searches, and silently swallowed tool errors |
 | **Instruction alignment** | Checks if the bot's runtime behavior matches its system instructions — language compliance, escalation triggers, scope restrictions |
@@ -77,7 +77,7 @@ flowchart TD
     direction TB
     I1[Upload ZIP<br/>full Copilot Studio export]
     I2[Upload loose files<br/>botContent.yml + dialog.json]
-    I3[Upload transcript JSON]
+    I3[Upload transcript JSON<br/>or Power Platform CSV]
     I4[Loose files + transcript<br/>combined upload]
     I5[Live Dataverse fetch<br/>OAuth device code]
   end

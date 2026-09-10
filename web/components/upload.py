@@ -4,6 +4,10 @@ from web.components.common import UPLOAD_ID, _MONO
 from web.state import State
 
 
+def _transcript_collection_option(option: dict) -> rx.Component:
+    return rx.select.item(option["label"], value=option["value"])
+
+
 def upload_form() -> rx.Component:
     return rx.center(
         rx.vstack(
@@ -87,7 +91,7 @@ def upload_form() -> rx.Component:
                                 font_weight="500",
                             ),
                             rx.text(
-                                ".zip bot export, botContent.yml + dialog.json, or .json transcript",
+                                ".zip bot export, botContent.yml + dialog.json, .json transcript, or Power Platform .csv",
                                 size="2",
                                 color="var(--gray-a8)",
                             ),
@@ -121,6 +125,44 @@ def upload_form() -> rx.Component:
                             color_scheme="red",
                             size="1",
                             width="100%",
+                        ),
+                    ),
+                    rx.cond(
+                        State.transcript_collection_options.length() > 0,
+                        rx.vstack(
+                            rx.hstack(
+                                rx.icon("messages-square", size=16, color="var(--green-9)"),
+                                rx.text(
+                                    State.transcript_collection_options.length().to_string() + " conversations loaded",
+                                    size="2",
+                                    font_weight="500",
+                                    color="var(--gray-12)",
+                                ),
+                                spacing="2",
+                                align="center",
+                            ),
+                            rx.select.root(
+                                rx.select.trigger(width="100%"),
+                                rx.select.content(
+                                    rx.foreach(State.transcript_collection_options, _transcript_collection_option),
+                                ),
+                                value=State.selected_transcript_index,
+                                on_change=State.set_selected_transcript_index,
+                            ),
+                            rx.button(
+                                rx.icon("scan-search", size=15),
+                                "Trace conversation",
+                                on_click=State.trace_selected_transcript,
+                                width="100%",
+                                size="3",
+                                color_scheme="green",
+                            ),
+                            spacing="3",
+                            width="100%",
+                            padding="16px",
+                            background="var(--gray-a2)",
+                            border="1px solid var(--green-a5)",
+                            border_radius="8px",
                         ),
                     ),
                     rx.button(
